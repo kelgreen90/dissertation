@@ -1,0 +1,210 @@
+// =========================
+// 1. Load Data
+// =========================
+
+// Load AOI asset
+var aoi = ee.FeatureCollection('projects/vvb-dissertation/assets/VVBM_buffer15');
+
+// Load the SRTM DEM and calculate slope
+var dem = ee.Image('USGS/SRTMGL1_003');
+var slope = ee.Terrain.slope(dem).rename('Slope');
+
+// Load park boundaries for mask
+var parksVector = ee.FeatureCollection('projects/vvb-dissertation/assets/parks_mask_MGNP');
+
+// =========================
+// 2. Cloud/Shadow Masking for Landsat C2 SR
+// =========================
+function maskLandsatC2SR(image) {
+  var qa = image.select('QA_PIXEL');
+  var cloudShadowBitMask = (1 << 4);
+  var cloudsBitMask = (1 << 3);
+  var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+               .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+  return image.updateMask(mask);
+}
+
+// =========================
+// 3. Composite for 2015
+// =========================
+function getLandsatComposite(area) {
+  var startDate = ee.Date('2015-01-01');
+  var endDate = ee.Date('2015-12-31');
+
+  var l8 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+            .filterDate(startDate, endDate)
+            .filterBounds(area)
+            .map(maskLandsatC2SR);
+
+  return l8.median().clip(area);
+}
+
+var image = getLandsatComposite(aoi);
+
+// =========================
+// 2. Calculate Indices and Add to Image
+// =========================
+
+var viirs = ee.ImageCollection('NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG');
+var viirsComposite = viirs
+  .filterDate('2015-01-01', '2015-12-31')
+  .mean()
+  .select('avg_rad')
+  .rename('NightLights')
+  .clip(aoi);
+
+// NDVI: (NIR - RED) / (NIR + RED)
+var ndvi = image.normalizedDifference(['SR_B5', 'SR_B4']).rename('NDVI');
+
+// NDMI: (NIR - SWIR1) / (NIR + SWIR1)
+var ndmi = image.normalizedDifference(['SR_B5', 'SR_B6']).rename('NDMI');
+
+// NBR: (NIR - SWIR2) / (NIR + SWIR2)
+var nbr = image.normalizedDifference(['SR_B5', 'SR_B7']).rename('NBR');
+
+// NDBI: (SWIR1 - NIR) / (SWIR1 + NIR)
+var ndbi = image.normalizedDifference(['SR_B6', 'SR_B5']).rename('NDBI');
+
+// UI: Urban Index (NDBI - NDVI)
+var ui = ndbi.subtract(ndvi).rename('UI');
+
+// EVI
+var evi = image.expression(
+  '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))', {
+    'NIR': image.select('SR_B5'),
+    'RED': image.select('SR_B4'),
+    'BLUE': image.select('SR_B2')
+  }).rename('EVI');
+
+// Add all indices and slope as bands to the image
+var imageWithIndices = image
+  .addBands(ndvi)
+  .addBands(ndmi)
+  .addBands(nbr)
+  .addBands(slope)
+  .addBands(ndbi)
+  .addBands(ui)
+  .addBands(evi)
+  .addBands(viirsComposite);
+
+// =========================
+// 3. Band Selection
+// =========================
+var bands = [
+  'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B7', 'NDVI', 'NDMI', 'NBR', 'Slope', 'NDBI', 'UI', 'EVI', 'NightLights'
+];
+
+// =========================
+// 4. Split into Training and Testing Sets (80/20)
+// =========================
+var trainingSet = ee.FeatureCollection('projects/vvb-dissertation/assets/train_80');
+var testingSet  = ee.FeatureCollection('projects/vvb-dissertation/assets/test_20');
+
+// =========================
+// 5. Sample Image with Training Set
+// =========================
+var trainingSamples = imageWithIndices.select(bands).sampleRegions({
+  collection: trainingSet,
+  properties: ['class'],
+  scale: 30,
+  tileScale: 2
+});
+
+// =========================
+// 6. Train Random Forest Classifier
+// =========================
+var classifier = ee.Classifier.smileRandomForest(500).train({
+  features: trainingSamples,
+  classProperty: 'class',
+  inputProperties: bands
+});
+
+// =========================
+// 7. Classify the Image
+// =========================
+var classified = imageWithIndices.select(bands).classify(classifier);
+
+// =========================
+// 8. Post-processing: Fix Water on Steep Slopes & Change within PAs
+// =========================
+
+// --- A. Reclassify Water on Steep Slopes as Barren (class 7) ---
+var slopeThreshold = 1;
+var waterMask = classified.eq(6);
+var steepMask = slope.gt(slopeThreshold);
+var waterOnSteepSlopes = waterMask.and(steepMask);
+var correctedWater = classified.where(waterOnSteepSlopes, 7);
+
+// -- B. Reclassify Cropland and Urban as Barren within PAs ---
+var parks_mask = ee.Image.constant(0) // convert to raster
+  .byte()
+  .paint({
+    featureCollection: parksVector,
+    color: 1
+  })
+  .rename('parks_mask')
+  .clip(aoi);
+var croplandMask = correctedWater.eq(2);
+var urbanMask2 = correctedWater.eq(5);
+var humanInParks = (croplandMask.or(urbanMask2)).and(parks_mask.eq(1));
+var finalClassified = correctedWater.where(humanInParks, 7);
+
+// --- C. Clip the final classified image to AOI ---
+var finalClassifiedClipped = finalClassified.clip(aoi);
+
+// =========================
+// 9. Display Results
+// =========================
+var visParams = {
+  min: 1,
+  max: 7,
+  palette: [
+    '#006400', // 1 Forest
+    '#C8A2C8', // 2 Agriculture
+    '#FCBA03', // 3 Shrubland
+    '#FFFF00', // 4 Grassland
+    '#E30000', // 5 Urban
+    '#3A06C9', // 6 Water
+    '#808080'  // 7 Barren
+  ]
+};
+
+Map.centerObject(aoi, 10);
+Map.addLayer(finalClassifiedClipped, visParams, 'LCC 2015');
+
+// =========================
+// 10. Accuracy Assessment
+// =========================
+var testingSamples = imageWithIndices.select(bands).sampleRegions({
+  collection: testingSet,
+  properties: ['class'],
+  scale: 30,
+  tileScale: 2
+});
+
+var testClassification = testingSamples.classify(classifier);
+
+var confusionMatrix = testClassification.errorMatrix('class', 'classification');
+print('Confusion Matrix:', confusionMatrix);
+print('Overall Accuracy:', confusionMatrix.accuracy());
+print('Kappa Coefficient:', confusionMatrix.kappa());
+
+var classifiedTestingPoints = testingSamples.classify(classifier);
+print(classifiedTestingPoints.limit(10));
+Export.table.toDrive({
+  collection: classifiedTestingPoints,
+  description: 'Classified_Testing_Points_Export',
+  fileFormat: 'CSV'
+});
+
+// =========================
+// 11. Export to Assets
+// =========================
+Export.image.toAsset({
+  image: finalClassifiedClipped,
+  description: 'LandCoverClassification2015_Export',
+  assetId: 'LCC_2015_v',
+  region: aoi.geometry(),
+  scale: 30,
+  maxPixels: 1e13
+});
