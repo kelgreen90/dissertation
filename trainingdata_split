@@ -4,7 +4,7 @@ from sklearn.model_selection import train_test_split
 # Load the CSV
 df = pd.read_csv("C:/Users/kelgr/Desktop/MSc/Dissertation/Training Data/TrainingData/training_data.csv") 
 
-# Ensure you have a 'class' column or similar for stratification
+# Split data randomly, ensuring equal representation of classes
 train_df, test_df = train_test_split(df, test_size=0.2, stratify=df['class'], random_state=42)
 
 # Save to new CSV files
