@@ -1,0 +1,44 @@
+library(tidyverse)
+
+# Read the CSV
+df_long <- read_csv("C:/Users/kelgr/Desktop/MSc/Dissertation/R/Country_Plots.csv", col_types = cols(
+  Class = col_character(),
+  Year = col_integer(),
+  Area = col_double()
+))
+
+# Consistent class order for plotting
+df_long$Class <- factor(df_long$Class, levels = c(
+  "Forest", "Cropland", "Shrubland", "Grassland", "Built-Up", "Water", "Barren"
+))
+         
+# Colour palette matching land cover classes
+land_cover_colors <- c(
+  "Forest" = "#006400",
+  "Cropland" = "#C8A2C8",
+  "Shrubland" = "#FCBA03",
+  "Grassland" = "#FFFF00",
+  "Built-Up" = "#E30000",
+  "Water" = "#3A06C9",
+  "Barren" = "#808080")
+
+df_percent <- df_long %>%
+  group_by(Year) %>%
+  mutate(Percent = Area / sum(Area))
+
+# Plot bar chart
+ggplot(df_percent, aes(x = factor(Year), y = Percent, fill = Class)) +
+  geom_col(width = 0.7) +
+  scale_y_continuous(labels = scales::percent_format(), expand = expansion(mult = c(0, 0.05))) +
+  scale_fill_manual(values = land_cover_colors) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Land Cover Proportions by Year per Country",
+    x = "Year",
+    y = "Percent of Total Area",
+    fill = "Land Cover Class"
+  ) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.major.x = element_blank()
+  )
