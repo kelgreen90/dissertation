@@ -1,4 +1,4 @@
-// Load AOI and Visualisation Setup
+// Load AOI
 var aoi = ee.FeatureCollection('projects/vvb-dissertation/assets/VVBM_buffer15');
 Map.centerObject(aoi, 8);
 Map.addLayer(aoi, {}, 'Area of Interest');
@@ -10,7 +10,7 @@ var slope = ee.Terrain.slope(dem).rename('Slope');
 // Load park boundaries for mask
 var parksVector = ee.FeatureCollection('projects/vvb-dissertation/assets/parks_mask');
 
-// Cloud Masking for Landsat
+// Cloud masking for Landsat
 function maskLandsatC2SR(image) {
   var qa = image.select('QA_PIXEL');
   var cloudShadowBitMask = (1 << 4);
@@ -20,7 +20,7 @@ function maskLandsatC2SR(image) {
   return image.updateMask(mask);
 }
 
-// Multi-Year Composite for 2000-2003
+// Multi-Year composite for 2000-2003
 function getLandsatComposite(area) {
   var startDate = ee.Date('2000-05-01');
   var endDate = ee.Date('2003-05-15');
@@ -35,7 +35,7 @@ function getLandsatComposite(area) {
 
 var image = getLandsatComposite(aoi);
 
-// Spectral Indices and Texture
+// Calculate pectral indices and texture
 
 var ndvi = image.normalizedDifference(['SR_B4', 'SR_B3']).rename('NDVI');  // B4 = NIR, B3 = Red
 var ndmi = image.normalizedDifference(['SR_B4', 'SR_B5']).rename('NDMI');  // B5 = SWIR1
@@ -49,7 +49,7 @@ var evi = image.expression(
     'BLUE': image.select('SR_B1')   // B1 = Blue
   }).rename('EVI');
 
-// Defense Meteorological Satellite Program (DMSP-OLS) 1km replacement for NTL
+// DMSP-OLS as replacement for NTL
 var dmsp = ee.ImageCollection('NOAA/DMSP-OLS/NIGHTTIME_LIGHTS')
   .filter(ee.Filter.calendarRange(2003, 2003, 'year'))
   .select('stable_lights')
@@ -77,16 +77,16 @@ var imageWithIndices = image
   .addBands(evi)
   .addBands(dmsp);
 
-// Select Bands for Classification
+// Select bands for classification
 var bands = [
   'SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B7', 'NDVI', 'NDMI', 'NBR', 'Slope', 'NDBI', 'UI', 'Texture', 'EVI', 'NightLights'
 ];
 
-// Load Training and Test Data
+// Load training and test data
 var trainingSet = ee.FeatureCollection('projects/vvb-dissertation/assets/train_80');
 var testingSet  = ee.FeatureCollection('projects/vvb-dissertation/assets/test_20');
 
-// Sample Training Data
+// Sample image with training data
 var trainingSamples = imageWithIndices.select(bands).sampleRegions({
   collection: trainingSet,
   properties: ['class'],
@@ -94,26 +94,26 @@ var trainingSamples = imageWithIndices.select(bands).sampleRegions({
   tileScale: 2
 });
 
-// Train Random Forest Classifier
+// Train Random Forest classifier
 var classifier = ee.Classifier.smileRandomForest(500).train({
   features: trainingSamples,
   classProperty: 'class',
   inputProperties: bands
 });
 
-// Classify the Image
+// Classify the image
 var classified = imageWithIndices.select(bands).classify(classifier);
 
 // Post-processing Masks
 
-// 1. Reclassify Water on Steep Slopes as Barren (class 7)
+// 1. Reclassify Water on steep slopes as Barren (class 7)
 var slopeThreshold = 1;
 var waterMask = classified.eq(6);
 var steepMask = slope.gt(slopeThreshold);
 var waterOnSteepSlopes = waterMask.and(steepMask);
 var correctedWater = classified.where(waterOnSteepSlopes, 7);
 
-// 2. Reclassify Cropland and Urban as Barren within PAs (excluding Mgahinga)
+// 2. Reclassify Cropland and Built-Up as Barren within PAs (excluding Mgahinga)
 var parks_mask = ee.Image.constant(0) // convert to raster
   .byte()
   .paint({
@@ -130,7 +130,7 @@ var finalClassified = correctedWater.where(humanInParks, 7);
 // Clip the final classified image to AOI
 var finalClassifiedClipped = finalClassified.clip(aoi);
 
-// Display Results
+// Display results
 var visParams = {
   min: 1,
   max: 7,
