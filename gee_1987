@@ -3,6 +3,11 @@ var aoi = ee.FeatureCollection('projects/vvb-dissertation/assets/VVBM_buffer15')
 Map.centerObject(aoi, 8);
 Map.addLayer(aoi, {}, 'Area of Interest');
 
+// Load SRTM and Mask Data
+var dem = ee.Image('USGS/SRTMGL1_003');
+var slope = ee.Terrain.slope(dem).rename('Slope');
+var parksVector = ee.FeatureCollection('projects/vvb-dissertation/assets/parks_mask');
+
 // Cloud/Shadow Masking for Landsat
 function maskLandsatC2SR(image) {
   var qa = image.select('QA_PIXEL');
@@ -27,11 +32,6 @@ function getLandsatComposite(area) {
 }
 
 var multiYearImage = getLandsatComposite(aoi);
-
-// Load Ancillary Data
-var dem = ee.Image('USGS/SRTMGL1_003');
-var slope = ee.Terrain.slope(dem).rename('Slope');
-var parksVector = ee.FeatureCollection('projects/vvb-dissertation/assets/parks_mask');
 
 // Spectral Indices and Texture
 var ndvi = multiYearImage.normalizedDifference(['SR_B4', 'SR_B3']).rename('NDVI');
@@ -146,10 +146,10 @@ var visParams = {
   max: 7,
   palette: [
     '#006400', // 1 Forest
-    '#C8A2C8', // 2 Agriculture
+    '#C8A2C8', // 2 Cropland
     '#FCBA03', // 3 Shrubland
     '#FFFF00', // 4 Grassland
-    '#E30000', // 5 Urban
+    '#E30000', // 5 Built-Up
     '#3A06C9', // 6 Water
     '#808080'  // 7 Barren
   ]
