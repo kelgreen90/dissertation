@@ -1,13 +1,9 @@
-// =========================
-// 1. Load AOI and Visualization Setup
-// =========================
+// Load AOI and Visualisation Setup
 var aoi = ee.FeatureCollection('projects/vvb-dissertation/assets/VVBM_buffer15');
 Map.centerObject(aoi, 8);
 Map.addLayer(aoi, {}, 'Area of Interest');
 
-// =========================
-// 2. Cloud/Shadow Masking for Landsat C2 SR
-// =========================
+// Cloud/Shadow Masking for Landsat
 function maskLandsatC2SR(image) {
   var qa = image.select('QA_PIXEL');
   var cloudShadowBitMask = (1 << 4);
@@ -17,9 +13,7 @@ function maskLandsatC2SR(image) {
   return image.updateMask(mask);
 }
 
-// =========================
-// 3. Multi-Year Composite for 1986–1987
-// =========================
+// Multi-Year Composite for 1986–1987
 function getLandsatComposite(area) {
   var startDate = ee.Date('1986-01-01');
   var endDate = ee.Date('1987-12-31');
@@ -34,16 +28,12 @@ function getLandsatComposite(area) {
 
 var multiYearImage = getLandsatComposite(aoi);
 
-// =========================
-// 4. Load Ancillary Data
-// =========================
+// Load Ancillary Data
 var dem = ee.Image('USGS/SRTMGL1_003');
 var slope = ee.Terrain.slope(dem).rename('Slope');
 var parksVector = ee.FeatureCollection('projects/vvb-dissertation/assets/parks_mask');
 
-// =========================
-// 5. Spectral Indices and Texture
-// =========================
+// Spectral Indices and Texture
 var ndvi = multiYearImage.normalizedDifference(['SR_B4', 'SR_B3']).rename('NDVI');
 var ndmi = multiYearImage.normalizedDifference(['SR_B4', 'SR_B5']).rename('NDMI');
 var nbr  = multiYearImage.normalizedDifference(['SR_B4', 'SR_B7']).rename('NBR');
@@ -53,7 +43,6 @@ var mndwi = multiYearImage.normalizedDifference(['SR_B2', 'SR_B5']).rename('MNDW
 var ibi = ndbi.subtract(ndvi.add(mndwi))
               .divide(ndbi.add(ndvi.add(mndwi)))
               .rename('IBI');
-
 var evi = multiYearImage.expression(
   '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))', {
     'NIR': multiYearImage.select('SR_B4'),
@@ -61,7 +50,7 @@ var evi = multiYearImage.expression(
     'BLUE': multiYearImage.select('SR_B1')
 }).rename('EVI');
 
-// SWIR GLCM
+// SWIR GLCM for Texture Analysis
 var swir1_int = multiYearImage.select('SR_B4')
   .multiply(0.0001)
   .multiply(1000)
@@ -70,9 +59,7 @@ var texture = swir1_int.glcmTexture({size: 3})
                        .select('SR_B4_contrast')
                        .rename('Texture');
 
-// =========================
-// 6. Tasseled Cap (Landsat 5)
-// =========================
+// Tasseled Cap (Landsat 5)
 function tasseledCapLandsat5(image) {
   var coefficients = [
     [0.2909, 0.2786, 0.4733, 0.5599, 0.5080, 0.1872],
@@ -92,32 +79,24 @@ function tasseledCapLandsat5(image) {
   return image.addBands(tcImage);
 }
 
-// =========================
-// 7. Combine All Bands
-// =========================
+// Combine All Bands
 var imageWithIndices = multiYearImage
   .addBands([ndvi, ndmi, nbr, slope, ndbi, ui, evi, mndwi, ibi, texture]);
 
 imageWithIndices = tasseledCapLandsat5(imageWithIndices);
 
-// =========================
-// 8. Select Bands for Classification
-// =========================
+// Select Bands for Classification
 var bands = [
   'SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B7',
   'NDVI', 'NDMI', 'NBR', 'Slope', 'NDBI', 'UI',
   'EVI', 'Brightness', 'Greenness', 'Wetness', 'MNDWI', 'IBI', 'Texture'
 ];
 
-// =========================
-// 9. Split into Train/Test Sets
-// =========================
+// Load Training and Test Data
 var trainingSet = ee.FeatureCollection('projects/vvb-dissertation/assets/train_80_1986');
 var testingSet  = ee.FeatureCollection('projects/vvb-dissertation/assets/test_20_1986');
 
-// =========================
-// 10. Sample Training Data
-// =========================
+// Sample Training Data
 var trainingSamples = imageWithIndices.select(bands).sampleRegions({
   collection: trainingSet,
   properties: ['class'],
@@ -125,32 +104,26 @@ var trainingSamples = imageWithIndices.select(bands).sampleRegions({
   tileScale: 2
 });
 
-// =========================
-// 11. Train Classifier
-// =========================
+// Train Random Forest Classifier
 var classifier = ee.Classifier.smileRandomForest(500).train({
   features: trainingSamples,
   classProperty: 'class',
   inputProperties: bands
 });
 
-// =========================
-// 12. Classify the Image
-// =========================
+// Classify the Image
 var classified = imageWithIndices.select(bands).classify(classifier);
 
-// =========================
-// 8. Post-processing: Fix Water on Steep Slopes & Remove Urban Above 2900m
-// =========================
+// Post-processing Masks
 
-// --- A. Reclassify Water on Steep Slopes as Barren (class 7) ---
+// 1. Reclassify Water on Steep Slopes as Barren (class 7)
 var slopeThreshold = 1;
 var waterMask = classified.eq(6);
 var steepMask = slope.gt(slopeThreshold);
 var waterOnSteepSlopes = waterMask.and(steepMask);
 var correctedWater = classified.where(waterOnSteepSlopes, 7);
 
-// -- B. Reclassify Cropland and Urban as Barren within PAs (excl. Mgahinga) ---
+// 2. Reclassify Cropland and Urban as Barren within PAs (excluding Mgahinga)
 var parks_mask = ee.Image.constant(0) // convert to raster
   .byte()
   .paint({
@@ -164,12 +137,10 @@ var urbanMask2 = correctedWater.eq(5);
 var humanInParks = (croplandMask.or(urbanMask2)).and(parks_mask.eq(1));
 var finalClassified = correctedWater.where(humanInParks, 7);
 
-// --- C. Clip the final classified image to AOI ---
+// Clip the final classified image to AOI
 var finalClassifiedClipped = finalClassified.clip(aoi);
 
-// =========================
-// 14. Display Results
-// =========================
+// Display Results
 var visParams = {
   min: 1,
   max: 7,
@@ -187,9 +158,7 @@ var visParams = {
 Map.centerObject(aoi, 10);
 Map.addLayer(finalClassifiedClipped, visParams, 'Land Cover Classification 1986');
 
-// =========================
-// 15. Accuracy Assessment
-// =========================
+// Accuracy Assessment
 var testingSamples = imageWithIndices.select(bands).sampleRegions({
   collection: testingSet,
   properties: ['class'],
@@ -209,13 +178,11 @@ Export.table.toDrive({
   fileFormat: 'CSV'
 });
 
-// =========================
-// 16. Export Final Classified Image to Assets
-// =========================
+// Export Final Classified Image to Assets
 Export.image.toAsset({
   image: finalClassifiedClipped,
-  description: 'LCC1986_Export',
-  assetId: 'LCC_1986_v',
+  description: 'LCC1987_Export',
+  assetId: 'LCC_1987_v',
   region: aoi.geometry(),
   scale: 30,
   maxPixels: 1e13
