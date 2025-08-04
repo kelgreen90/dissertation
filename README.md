@@ -6,4 +6,6 @@ The environmental impact of armed conflict is often an under-considered but impo
 
 Keywords: remote sensing, land cover classification, land cover change, armed conflict, Landsat, Google Earth Engine, Random Forest, Rwanda, Uganda, Democratic Republic of the Congo, Virunga, Bwindi, Mgahinga, Volcanoes
 
+REPOSITORY
+
 The scripts contained within this repository are divided into land cover classification and visualisations. The land cover classification was done using Random Forest supervised machine learning within Google Earth Engine. Most of these are in JavaScript, with some additional scripts in Python for managing the data. Visualisation of data following classification were done using Python and R Studio as well as ArcGIS Pro (not included here).
